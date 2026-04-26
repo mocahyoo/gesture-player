@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Hand Gesture Player</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<style>
+  /* ===== RESET & TOKENS ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d0d0d;
+    --surface:   #141414;
+    --panel:     #1a1a1a;
+    --border:    #2a2a2a;
+    --text:      #e8e8e8;
+    --muted:     #555;
+    --accent:    #c8f135;       /* electric lime */
+    --accent2:   #c8f135;       /* lime — easter egg */
+    --green:     #3dffa0;
+    --orange:    #ff8c42;
+    --red:       #ff4a4a;
+    --blue:      #5eb8ff;
+    --font-mono: 'Space Mono', monospace;
+    --font-body: 'DM Sans', sans-serif;
+    --radius:    12px;
+    --radius-sm: 6px;
+    --ease:      cubic-bezier(.16,1,.3,1);
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    overflow: hidden;
+  }
+
+  /* ===== LAYOUT ===== */
+  .app {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100dvh;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
+
+  /* ===== HEADER ===== */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 0 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: clamp(13px, 2vw, 16px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .logo-icon {
+    font-size: 22px;
+    line-height: 1;
+    filter: drop-shadow(0 0 8px var(--accent));
+  }
+
+  .badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--panel);
+    transition: all 0.3s var(--ease);
+  }
+  .badge-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s var(--ease);
+    flex-shrink: 0;
+  }
+  .badge.idle   .badge-dot { background: var(--muted); }
+  .badge.playing .badge-dot { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.2s infinite; }
+  .badge.stopped .badge-dot { background: var(--orange); }
+  .badge.ended   .badge-dot { background: var(--muted); }
+  .badge.error   .badge-dot { background: var(--red); }
+  .badge.secret  .badge-dot { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); animation: pulse 0.8s infinite; }
+
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+  }
+
+  /* ===== MAIN PANELS ===== */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 12px 0;
+    min-height: 0;
+  }
+
+  @media (max-width: 640px) {
+    main { grid-template-columns: 1fr; }
+    html, body { overflow: auto; }
+    .app { height: auto; min-height: 100dvh; overflow: auto; }
+  }
+
+  .pane {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .pane-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .pane-body {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ===== CAMERA ===== */
+  #camCanvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transform: scaleX(-1); /* mirror for selfie view */
+  }
+
+  /* hidden video element for MediaPipe input */
+  #inputVideo { display: none; }
+
+  /* gesture hint chip */
+  .hint-chip {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 999px;
+    padding: 5px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #ffdd88;
+    font-weight: 700;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  .hint-chip.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* finger count chip */
+  .finger-chip {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 700;
+    pointer-events: none;
+  }
+
+  /* ===== VIDEO PLAYER ===== */
+  #mainVideo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: none;
+  }
+
+  .video-idle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px;
+    position: absolute;
+    inset: 0;
+  }
+  .video-idle .idle-icon {
+    font-size: 36px;
+    opacity: 0.3;
+  }
+
+  /* ===== EASTER EGG OVERLAY ===== */
+  .egg-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s var(--ease);
+    z-index: 10;
+  }
+  .egg-overlay.show { opacity: 1; }
+
+  .egg-msg {
+    font-family: var(--font-body);
+    font-size: clamp(15px, 3vw, 20px);
+    font-weight: 500;
+    color: var(--accent2);
+    text-align: center;
+    line-height: 1.5;
+    padding: 0 24px;
+    text-shadow: 0 0 40px rgba(45, 255, 3, 0.6);
+    animation: fadeUp 0.6s var(--ease) both;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .egg-hearts {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .heart {
+    position: absolute;
+    font-size: 18px;
+    opacity: 0;
+    animation: floatHeart 4s ease-in-out infinite;
+    color: var(--accent2);
+    filter: drop-shadow(0 0 6px var(--accent2));
+  }
+  @keyframes floatHeart {
+    0%   { opacity: 0; transform: translateY(0) scale(0.8); }
+    20%  { opacity: 0.8; }
+    80%  { opacity: 0.4; }
+    100% { opacity: 0; transform: translateY(-60px) scale(1.1); }
+  }
+
+  /* Camera egg overlay (canvas-side) */
+  #camEggCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.4s;
+    transform: scaleX(-1);
+  }
+  #camEggCanvas.show { opacity: 1; }
+
+  /* ===== STATUS BAR ===== */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 10px 0 max(12px, env(safe-area-inset-bottom));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .status-left {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  #statusDetail {
+    font-family: var(--font-mono);
+    font-size: clamp(9px, 1.5vw, 11px);
+    color: #888;
+    letter-spacing: 0.02em;
+  }
+
+  .status-hint {
+    font-size: clamp(9px, 1.4vw, 11px);
+    color: var(--muted);
+    font-family: var(--font-body);
+  }
+  .status-hint span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 12px;
+  }
+  .key {
+    display: inline-block;
+    background: var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--accent);
+  }
+
+  /* start button (mobile fallback) */
+  #startBtn {
+    padding: 8px 20px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #000;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.15s, opacity 0.15s;
+    flex-shrink: 0;
+  }
+  #startBtn:hover { transform: scale(1.04); }
+  #startBtn:active { transform: scale(0.97); }
+  #startBtn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  /* ===== LOADING SCREEN ===== */
+  #loadScreen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 100;
+    transition: opacity 0.5s var(--ease);
+  }
+  #loadScreen.hidden { opacity: 0; pointer-events: none; }
+
+  .load-title {
+    font-family: var(--font-mono);
+    font-size: clamp(14px, 3vw, 18px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .load-sub {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+  }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== PERMISSION ERROR ===== */
+  #permError {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    align-items: center;
+    justify-content: center;
+    z-index: 99;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    padding: 24px;
+  }
+  #permError.show { display: flex; }
+  #permError h2 { font-family: var(--font-mono); font-size: 16px; color: var(--red); }
+  #permError p  { font-size: 13px; color: var(--muted); max-width: 320px; line-height: 1.6; }
+  #permError button {
+    margin-top: 8px;
+    padding: 8px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loadScreen">
+  <div class="spinner"></div>
+  <div class="load-title">✋ Hand Gesture Player</div>
+  <div class="load-sub" id="loadMsg">Loading MediaPipe…</div>
+</div>
+
+<!-- Permission error -->
+<div id="permError">
+  <h2>Camera Access Denied</h2>
+  <p>This app needs your camera to detect hand gestures. Please allow camera access and reload the page.</p>
+  <button onclick="location.reload()">Reload</button>
+</div>
+
+<!-- Hidden video for MediaPipe -->
+<video id="inputVideo" playsinline></video>
+
+<!-- App shell -->
+<div class="app">
+  <header>
+    <div class="logo">
+      <span class="logo-icon">✋</span>
+      GESTURE PLAYER
+    </div>
+    <div class="badge idle" id="badge">
+      <div class="badge-dot"></div>
+      <span id="badgeText">IDLE</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Camera pane -->
+    <div class="pane">
+      <div class="pane-label">— Camera Feed</div>
+      <div class="pane-body">
+        <canvas id="camCanvas"></canvas>
+        <canvas id="camEggCanvas"></canvas>
+        <div class="hint-chip" id="hintChip"></div>
+        <div class="finger-chip" id="fingerChip">0</div>
+      </div>
+    </div>
+
+    <!-- Video pane -->
+    <div class="pane">
+      <div class="pane-label">— Video Player</div>
+      <div class="pane-body" id="videoPane">
+        <div class="video-idle" id="videoIdle">
+          <span class="idle-icon">▶</span>
+          Waiting for gesture…
+        </div>
+        <video id="mainVideo" src="assets/kicaw.mp4" playsinline></video>
+
+        <!-- Easter egg overlay on video side -->
+        <div class="egg-overlay" id="eggOverlay">
+          <div class="egg-hearts" id="eggHearts"></div>
+          <div class="egg-msg" id="eggMsg"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="status-left">
+      <div id="statusDetail">Camera: initializing… | Hand: – | Fingers: – | State: Idle</div>
+      <div class="status-hint">
+        <span><span class="key">✌</span> 2 fingers → play</span>
+        <span><span class="key">☝</span> 1 finger → stop</span>
+        <span>· hidden gesture unlocks a secret</span>
+      </div>
+    </div>
+    <button id="startBtn" onclick="initCamera()">Enable Camera</button>
+  </footer>
+</div>
+
+<script>
+// ============================================================
+//  CONFIG
+// ============================================================
+const COOLDOWN_MS      = 1500;
+const ILY_HOLD_FRAMES  = 10;
+const EGG_DURATION_MS  = 4500;
+const SMOOTH_BUF_SIZE  = 5;
+
+const EGG_MESSAGES = [
+  { text: "KICAWWW", color: "#c8f135" },
+];
+
+// ============================================================
+//  STATE
+// ============================================================
+let playing       = false;
+let lastTriggerTs = 0;
+let eggIndex      = 0;
+let eggUntil      = 0;
+let eggStart      = 0;
+let hintTimer     = null;
+let ilyCount      = 0;
+let ilyTriggered  = false;
+let fingerBuf     = [];
+let cameraReady   = false;
+
+// ============================================================
+//  DOM REFS
+// ============================================================
+const camCanvas    = document.getElementById('camCanvas');
+const camCtx       = camCanvas.getContext('2d');
+const camEggCanvas = document.getElementById('camEggCanvas');
+const camEggCtx    = camEggCanvas.getContext('2d');
+const mainVideo    = document.getElementById('mainVideo');
+const videoIdle    = document.getElementById('videoIdle');
+const eggOverlay   = document.getElementById('eggOverlay');
+const eggMsg       = document.getElementById('eggMsg');
+const eggHearts    = document.getElementById('eggHearts');
+const hintChip     = document.getElementById('hintChip');
+const fingerChip   = document.getElementById('fingerChip');
+const badge        = document.getElementById('badge');
+const badgeText    = document.getElementById('badgeText');
+const statusDetail = document.getElementById('statusDetail');
+const loadScreen   = document.getElementById('loadScreen');
+const loadMsg      = document.getElementById('loadMsg');
+const permError    = document.getElementById('permError');
+const startBtn     = document.getElementById('startBtn');
+
+// ============================================================
+//  BADGE HELPER
+// ============================================================
+function setBadge(state, label) {
+  badge.className = 'badge ' + state;
+  badgeText.textContent = label;
+}
+
+// ============================================================
+//  HINT CHIP
+// ============================================================
+function showHint(text, ms = 2000) {
+  hintChip.textContent = text;
+  hintChip.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hintChip.classList.remove('show'), ms);
+}
+
+// ============================================================
+//  FINGER DETECTION  (ported 1-to-1 from Python)
+// ============================================================
+
+// landmarks: array of {x, y, z} (normalised 0-1)
+// handedness: "Left" | "Right"  (MediaPipe label, pre-flip)
+// Note: we mirror the video display (CSS scaleX(-1)) but run
+// MediaPipe on the raw frame, so handedness is NOT swapped —
+// same logic as the Python version after cv2.flip.
+
+function isThumbExtended(lm, handedness) {
+  const tip = lm[4], ip = lm[3], mcp = lm[2];
+  const gap = Math.abs(tip.x - ip.x);
+  if (gap < 0.02) return false;
+  if (handedness === 'Right') {
+    return tip.x < ip.x && ip.x < mcp.x;
+  }
+  return tip.x > ip.x && ip.x > mcp.x;
+}
+
+function isFingerExtended(lm, tipIdx, pipIdx) {
+  const tip = lm[tipIdx], pip = lm[pipIdx], mcp = lm[tipIdx - 3];
+  return tip.y < pip.y && tip.y < mcp.y;
+}
+
+function getFingerStates(lm, handedness) {
+  return [
+    isThumbExtended(lm, handedness) ? 1 : 0,
+    isFingerExtended(lm, 8,  6)     ? 1 : 0,
+    isFingerExtended(lm, 12, 10)    ? 1 : 0,
+    isFingerExtended(lm, 16, 14)    ? 1 : 0,
+    isFingerExtended(lm, 20, 18)    ? 1 : 0,
+  ];
+}
+
+function countFingers(states) { return states.reduce((a, b) => a + b, 0); }
+
+function isILY(states) {
+  return states[0]===1 && states[1]===1 && states[2]===0 && states[3]===0 && states[4]===1;
+}
+
+// Smoothing buffer
+function smoothedCount(raw) {
+  fingerBuf.push(raw);
+  if (fingerBuf.length > SMOOTH_BUF_SIZE) fingerBuf.shift();
+  return Math.round(fingerBuf.reduce((a, b) => a + b, 0) / fingerBuf.length);
+}
+
+// ============================================================
+//  ILY TRACKER
+// ============================================================
+function updateILY(states) {
+  if (isILY(states)) {
+    ilyCount++;
+  } else {
+    ilyCount = 0;
+    ilyTriggered = false;
+  }
+  if (ilyCount >= ILY_HOLD_FRAMES && !ilyTriggered) {
+    ilyTriggered = true;
+    return true;
+  }
+  return false;
+}
+
+// ============================================================
+//  VIDEO CONTROLS
+// ============================================================
+function startVideo() {
+  mainVideo.style.display = 'block';
+  videoIdle.style.display = 'none';
+  mainVideo.currentTime = 0;
+  mainVideo.play().catch(() => {});
+  playing = true;
+  setBadge('playing', 'PLAYING');
+}
+
+function stopVideo() {
+  mainVideo.pause();
+  mainVideo.style.display = 'none';
+  videoIdle.style.display = 'flex';
+  playing = false;
+  setBadge('stopped', 'STOPPED');
+}
+
+mainVideo.addEventListener('ended', () => {
+  stopVideo();
+  setBadge('ended', 'ENDED');
+});
+
+// ============================================================
+//  EASTER EGG
+// ============================================================
+function spawnHearts() {
+  eggHearts.innerHTML = '';
+  const positions = [
+    [12,18],[82,22],[50,10],[25,78],[75,82],[38,55],[65,35]
+  ];
+  positions.forEach(([lp, tp], i) => {
+    const h = document.createElement('span');
+    h.className = 'heart';
+    h.textContent = '( •̀ ω •́ )✧';
+    h.style.left = lp + '%';
+    h.style.top  = tp + '%';
+    h.style.animationDelay = (i * 0.4) + 's';
+    h.style.animationDuration = (3 + Math.random()) + 's';
+    h.style.fontSize = (14 + Math.random() * 10) + 'px';
+    eggHearts.appendChild(h);
+  });
+}
+
+function triggerEasterEgg() {
+  if (playing) stopVideo();
+
+  eggStart = performance.now();
+  eggUntil = eggStart + EGG_DURATION_MS;
+
+  const egg = EGG_MESSAGES[eggIndex % EGG_MESSAGES.length];
+  eggIndex++;
+
+  eggMsg.textContent = egg.text;
+  eggMsg.style.color = egg.color;
+  eggMsg.style.textShadow = `0 0 40px ${egg.color}88`;
+
+  spawnHearts();
+  eggOverlay.classList.add('show');
+  camEggCanvas.classList.add('show');
+  setBadge('secret', 'SECRET ✦');
+
+  setTimeout(() => {
+    eggOverlay.classList.remove('show');
+    camEggCanvas.classList.remove('show');
+    if (!playing) setBadge('idle', 'IDLE');
+  }, EGG_DURATION_MS);
+}
+
+// Camera-side pink vignette overlay during egg
+function drawEggOverlay(progress) {
+  const w = camEggCanvas.width, h = camEggCanvas.height;
+  camEggCtx.clearRect(0, 0, w, h);
+
+  const alpha = Math.min(progress * 2.5, 0.35) * 0.22;
+  camEggCtx.fillStyle = `rgba(150,180,30,${alpha})`;
+  camEggCtx.fillRect(0, 0, w, h);
+
+  // pulsing hearts
+  const pulse = 14 + 4 * Math.sin(progress * Math.PI * 8);
+  const pts = [[0.12,0.18],[0.82,0.22],[0.50,0.10],[0.25,0.78],[0.75,0.82]];
+  camEggCtx.font = `${pulse}px serif`;
+  camEggCtx.fillStyle = 'rgba(180,220,40,0.85)';
+  camEggCtx.textAlign = 'center';
+  pts.forEach(([fx, fy]) => {
+    camEggCtx.fillText('( •̀ ω •́ )✧', fx * w, fy * h);
+  });
+}
+
+// ============================================================
+//  GESTURE HANDLER  (called each MediaPipe frame)
+// ============================================================
+function handleGesture(states, fingerCount) {
+  const now = performance.now();
+  const eggActive = now < eggUntil;
+
+  if (now - lastTriggerTs < COOLDOWN_MS) return;
+
+  if (updateILY(states)) {
+    triggerEasterEgg();
+    lastTriggerTs = now;
+    return;
+  }
+
+  if (fingerCount === 2 && !playing && !eggActive) {
+    showHint('2 fingers  ▶  play');
+    startVideo();
+    lastTriggerTs = now;
+    return;
+  }
+
+  if (fingerCount === 1 && playing) {
+    showHint('1 finger  ■  stop');
+    stopVideo();
+    lastTriggerTs = now;
+  }
+}
+
+// ============================================================
+//  MEDIAPIPE HANDS SETUP
+// ============================================================
+function initMediaPipe(stream) {
+  const inputVideo = document.getElementById('inputVideo');
+  inputVideo.srcObject = stream;
+  inputVideo.play();
+
+  const hands = new Hands({
+    locateFile: (file) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands:            1,
+    modelComplexity:        0,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence:  0.5,
+  });
+
+  hands.onResults(onResults);
+
+  const camera = new Camera(inputVideo, {
+    onFrame: async () => {
+      await hands.send({ image: inputVideo });
+    },
+    width: 640,
+    height: 480,
+  });
+
+  camera.start();
+  loadMsg.textContent = 'Starting camera…';
+}
+
+// ============================================================
+//  MEDIAPIPE RESULTS CALLBACK
+// ============================================================
+function onResults(results) {
+  // Sync canvas size to displayed size
+  const rect = camCanvas.getBoundingClientRect();
+  if (camCanvas.width !== rect.width || camCanvas.height !== rect.height) {
+    camCanvas.width  = rect.width;
+    camCanvas.height = rect.height;
+    camEggCanvas.width  = rect.width;
+    camEggCanvas.height = rect.height;
+  }
+
+  const W = camCanvas.width, H = camCanvas.height;
+  camCtx.save();
+  // Flip horizontally so drawing coords match the mirrored CSS display
+  camCtx.translate(W, 0);
+  camCtx.scale(-1, 1);
+  camCtx.drawImage(results.image, 0, 0, W, H);
+  camCtx.restore();
+
+  const now     = performance.now();
+  const eggActive = now < eggUntil;
+
+  let handDetected  = false;
+  let fingerStates  = [0,0,0,0,0];
+  let rawCount      = 0;
+
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    handDetected = true;
+    const lm          = results.multiHandLandmarks[0];
+    const handedness  = results.multiHandedness[0].label; // "Left" | "Right"
+    fingerStates = getFingerStates(lm, handedness);
+    rawCount     = countFingers(fingerStates);
+
+    const smooth = smoothedCount(rawCount);
+    fingerChip.textContent = smooth;
+
+    // Draw landmarks (mirrored to match display)
+    camCtx.save();
+    camCtx.translate(W, 0);
+    camCtx.scale(-1, 1);
+
+    // Connections
+    if (window.drawConnectors) {
+      drawConnectors(camCtx, lm, HAND_CONNECTIONS, { color: eggActive ? '#c8f135' : '#00d4ff', lineWidth: 2 });
+      drawLandmarks(camCtx, lm, { color: eggActive ? '#3dffa0' : '#00ff88', lineWidth: 1, radius: 3 });
+    }
+
+    // Bounding box
+    const xs = lm.map(p => p.x * W), ys = lm.map(p => p.y * H);
+    const x1 = Math.max(Math.min(...xs) - 16, 0);
+    const y1 = Math.max(Math.min(...ys) - 16, 0);
+    const x2 = Math.min(Math.max(...xs) + 16, W);
+    const y2 = Math.min(Math.max(...ys) + 16, H);
+
+    const pulse = Math.sin(Date.now() / 200) * 0.5 + 0.5;
+const boxCol = eggActive
+  ? `rgba(200,241,53,${0.6 + pulse * 0.4})`
+  : (playing ? '#3dffa0' : '#5eb8ff');
+    camCtx.strokeStyle = boxCol;
+    camCtx.lineWidth = 2;
+    camCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    // Count badge
+    camCtx.fillStyle = boxCol;
+    camCtx.fillRect(x1, y1 - 28, 40, 24);
+    camCtx.fillStyle = '#000';
+    camCtx.font = 'bold 14px monospace';
+    camCtx.textAlign = 'left';
+    camCtx.fillText(smooth, x1 + 6, y1 - 10);
+
+    camCtx.restore();
+
+    handleGesture(fingerStates, smooth);
+  } else {
+    fingerBuf = [];
+    fingerChip.textContent = '–';
+    ilyCount = 0;
+    ilyTriggered = false;
+  }
+
+  // Easter egg camera overlay
+  if (eggActive) {
+    const progress = (now - eggStart) / EGG_DURATION_MS;
+    drawEggOverlay(progress);
+  } else {
+    camEggCtx.clearRect(0, 0, camEggCanvas.width, camEggCanvas.height);
+  }
+
+  // Status bar
+  const stateStr = playing ? 'Playing' : (eggActive ? 'Easter Egg ✨' : 'Idle');
+  const smooth2  = fingerBuf.length
+    ? Math.round(fingerBuf.reduce((a,b)=>a+b,0)/fingerBuf.length)
+    : '–';
+  statusDetail.textContent =
+    `Camera: active  |  Hand: ${handDetected ? 'detected' : 'not found'}  |  Fingers: ${smooth2}  |  State: ${stateStr}`;
+
+  if (!playing && !eggActive) setBadge('idle', 'IDLE');
+
+  // Hide load screen once first frame arrives
+  if (!cameraReady) {
+    cameraReady = true;
+    loadScreen.classList.add('hidden');
+    startBtn.disabled = true;
+    startBtn.textContent = 'Camera Active';
+  }
+}
+
+// ============================================================
+//  CAMERA INIT
+// ============================================================
+async function initCamera() {
+  startBtn.disabled = true;
+  loadMsg.textContent = 'Requesting camera…';
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false,
+    });
+    loadMsg.textContent = 'Loading hand model…';
+    initMediaPipe(stream);
+  } catch (err) {
+    console.error(err);
+    loadScreen.classList.add('hidden');
+    permError.classList.add('show');
+  }
+}
+
+// ============================================================
+//  BOOT
+// ============================================================
+window.addEventListener('load', () => {
+  // Auto-start on desktop; show button on iOS (requires user gesture)
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  if (!isIOS) {
+    initCamera();
+  } else {
+    loadMsg.textContent = 'Tap "Enable Camera" to start';
+  }
+});
+</script>
+</body>
+</html>
+HTMLEOF
